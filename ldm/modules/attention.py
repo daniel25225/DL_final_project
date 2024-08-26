@@ -8,6 +8,19 @@ from einops import rearrange, repeat
 from ldm.modules.diffusionmodules.util import checkpoint
 
 
+# LoRA-based personalized residuals for conv layers
+class LoRALayer(nn.Module):
+    def __init__(self, conv_layer, rank=4):
+        super().__init__()
+        self.conv_layer = conv_layer
+        self.rank = rank
+        self.A = nn.Parameter(torch.randn(conv_layer.out_channels, rank) * 0.01)
+        self.B = nn.Parameter(torch.randn(rank, conv_layer.out_channels) * 0.01)
+
+    def forward(self, x):
+        weight_residual = torch.matmul(self.A, self.B).unsqueeze(-1).unsqueeze(-1)
+        return F.conv2d(x, self.conv_layer.weight + weight_residual, bias=self.conv_layer.bias)
+
 def exists(val):
     return val is not None
 
@@ -246,6 +259,7 @@ class SpatialTransformer(nn.Module):
                                               kernel_size=1,
                                               stride=1,
                                               padding=0))
+        self.lora_layer = LoRALayer(self.proj_out)
 
     def forward(self, x, context=None):
         # note: if no context is given, cross-attention defaults to self-attention
@@ -257,5 +271,6 @@ class SpatialTransformer(nn.Module):
         for block in self.transformer_blocks:
             x = block(x, context=context)
         x = rearrange(x, 'b (h w) c -> b c h w', h=h, w=w)
-        x = self.proj_out(x)
+        x = self.lora_layer(x)
+        
         return x + x_in
